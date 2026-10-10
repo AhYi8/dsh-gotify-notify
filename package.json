@@ -1,6 +1,6 @@
 {
   "name": "dsh-gotify-notify",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "DSH 会话轮次结束 Gotify 通知插件：可在设置界面配置的宿主 + 浏览器插件包",
   "type": "module",
   "main": "lib/index.js",

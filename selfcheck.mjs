@@ -12,18 +12,22 @@
 import assert from 'node:assert/strict'
 import {
   Config,
+  DEFAULT_NOTIFY_REASONS,
   DEFAULT_PASSWORD_REF,
   DEFAULT_URL,
+  REASON_KINDS,
   isCredentialRefName,
   latestTitle,
   launchEnvironmentOf,
   missingCredentialMessage,
+  priorityFor,
   reasonError,
   reasonLabel,
   render,
   resolveConfig,
   resolveCredentials,
   sameOriginRequest,
+  shouldNotify,
 } from './lib/index.js'
 
 /** 用默认值构造一份「已解析」的配置对象（模拟 cordis 传给 apply 的 config）。 */
@@ -36,8 +40,10 @@ function resolved(overrides = {}) {
     titleCompleted: 'DSH 任务完成',
     titleOther: 'DSH 轮次结束（{reason}）',
     message: '会话 {title} 第 {turn} 轮已结束\\n结果：{reason}',
-    priority: 5,
-    notifyOnErrorOnly: false,
+    notifyReasons: DEFAULT_NOTIFY_REASONS.slice(),
+    priorityCompleted: 3,
+    priorityError: 8,
+    minTurn: 0,
     includeSubagents: false,
     ...overrides,
   }
@@ -87,7 +93,7 @@ const schemaJson = JSON.stringify([
 assert.ok(schemaJson.includes('volatile'), '序列化结果里应保留 volatile 元信息')
 
 // 2) 全部字段都是 volatile（否则设置界面看不到它们）。
-const fields = ['url', 'token', 'user', 'passwordEnv', 'titleCompleted', 'titleOther', 'message', 'priority', 'notifyOnErrorOnly', 'includeSubagents']
+const fields = ['url', 'token', 'user', 'passwordEnv', 'titleCompleted', 'titleOther', 'message', 'notifyReasons', 'priorityCompleted', 'priorityError', 'minTurn', 'includeSubagents']
 for (const field of fields) {
   assert.ok(Config.dict[field] !== undefined, `Config 缺少字段 ${field}`)
   assert.equal(Config.dict[field].meta.volatile, true, `字段 ${field} 不是 volatile`)
@@ -101,8 +107,9 @@ assert.throws(() => resolveConfig(resolved()), /缺少合法的 url/)
 assert.throws(() => resolveConfig(resolved({ url: 'ftp://gotify.example.com' })), /缺少合法的 url/)
 const cfg = resolveConfig(resolved({ url: 'https://gotify.21zys.com/' }))
 assert.equal(cfg.url, 'https://gotify.21zys.com')
-assert.equal(cfg.priority, 5)
-assert.equal(cfg.notifyOnErrorOnly, false)
+assert.equal(cfg.priorityCompleted, 3)
+assert.equal(cfg.priorityError, 8)
+assert.equal(cfg.minTurn, 0)
 
 // 4) 凭据优先级：凭据服务 > 启动环境 > null。
 //    凭据服务是**软探测**（官方 llm-deepseek 适配器同款）：`ctx.get('credentials')`
@@ -308,4 +315,62 @@ assert.equal(
   '成功时 {error} 渲染成空，不残留字面量',
 )
 
-console.log('selfcheck 通过：Config 10 个 volatile 字段、url/凭据（凭据服务优先）/模板/会话标题/结束原因中文化/错误详情/测试路由围栏均符合预期。')
+// 11) 触发判定真值表：原因集合过滤 + 轮次门槛 + 分档优先级。
+assert.deepEqual(
+  REASON_KINDS,
+  ['completed', 'error', 'blocked', 'aborted', 'interrupted', 'max-tokens', 'forked'],
+  '原因全集应与 TurnEndReasonMap 一致',
+)
+const allCfg = resolveConfig(resolved({ url: 'https://gotify.21zys.com' }))
+for (const kind of REASON_KINDS) {
+  if (kind === 'forked') continue
+  assert.equal(shouldNotify(kind, 1, allCfg), true, `默认集合应放行 ${kind}`)
+}
+assert.equal(shouldNotify('forked', 1, allCfg), false, 'forked 默认不推（内部行为）')
+assert.equal(shouldNotify('brand-new-kind', 1, allCfg), false, '未勾选的未知取值不推')
+assert.equal(
+  shouldNotify('brand-new-kind', 1, resolveConfig(resolved({ url: 'https://gotify.21zys.com', notifyReasons: ['brand-new-kind'] }))),
+  true,
+  '勾选了未知取值也能推（后端新增原因不至于静默丢失）',
+)
+assert.equal(
+  shouldNotify('completed', 1, resolveConfig(resolved({ url: 'https://gotify.21zys.com', notifyReasons: [] }))),
+  false,
+  '空集合是显式的「一个都不推」',
+)
+assert.equal(
+  shouldNotify('completed', 1, resolveConfig(resolved({ url: 'https://gotify.21zys.com', notifyReasons: 'completed' }))),
+  true,
+  'notifyReasons 非数组（旧配置/手写漏键）时回落默认全集',
+)
+assert.equal(
+  shouldNotify('completed', 1, resolveConfig(resolved({ url: 'https://gotify.21zys.com', notifyReasons: ['completed', 42, ''] }))),
+  true,
+  '集合里的非字符串项应被过滤而不是炸掉',
+)
+// 轮次门槛：低于门槛拦截、达到放行、缺失放行、非整数配置回落 0。
+const turnCfg = resolveConfig(resolved({ url: 'https://gotify.21zys.com', minTurn: 3 }))
+assert.equal(shouldNotify('completed', 2, turnCfg), false, '低于门槛的轮次不推')
+assert.equal(shouldNotify('completed', 3, turnCfg), true, '达到门槛的轮次放行')
+assert.equal(shouldNotify('completed', undefined, turnCfg), true, '轮次缺失时不拦（宁可多推）')
+assert.equal(shouldNotify('completed', '2', turnCfg), true, '轮次不是数字时同样不拦')
+assert.equal(shouldNotify('completed', 2.5, turnCfg), true, '非整数数字轮次视为不可靠元数据而放行')
+// 裸调用（未经 resolveConfig 的 config）也回落默认全集，与 resolveConfig 口径一致。
+assert.equal(shouldNotify('forked', 1, {}), false, '裸调用的 forked 也不推（回落默认集）')
+assert.equal(shouldNotify('completed', 1, {}), true, '裸调用的 completed 放行（回落默认集）')
+assert.equal(
+  resolveConfig(resolved({ url: 'https://gotify.21zys.com', minTurn: -1 })).minTurn,
+  0,
+  '负数门槛回落 0',
+)
+// 分档优先级：成功档 / 异常档 / 越界回落。
+assert.equal(priorityFor('completed', allCfg), 3, 'completed 用成功档优先级')
+assert.equal(priorityFor('error', allCfg), 8, 'error 用异常档优先级')
+assert.equal(priorityFor('unknown', allCfg), 8, '未知取值偏向异常档')
+assert.equal(
+  priorityFor('completed', resolveConfig(resolved({ url: 'https://gotify.21zys.com', priorityCompleted: 99 }))),
+  3,
+  '越界的优先级草稿回落默认档',
+)
+
+console.log('selfcheck 通过：Config 12 个 volatile 字段、url/凭据（凭据服务优先）/模板/会话标题/结束原因中文化/错误详情/测试路由围栏/触发判定真值表均符合预期。')

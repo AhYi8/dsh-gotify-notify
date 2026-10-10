@@ -38,6 +38,23 @@ window.__ModuleLoader__.load({
     /** 宿主半注册的测试通知路由。 */
     const TEST_ROUTE = '/gotify-notify/test'
 
+    /**
+     * 触发原因全集与标签，必须与宿主半的 `REASON_KINDS` / `REASON_LABELS` 一致。
+     * 顺序即面板上的展示顺序。
+     */
+    const REASONS = [
+      { kind: 'completed', label: '成功' },
+      { kind: 'error', label: '失败' },
+      { kind: 'blocked', label: '被阻断' },
+      { kind: 'aborted', label: '已中止' },
+      { kind: 'interrupted', label: '已中断' },
+      { kind: 'max-tokens', label: '超出长度上限' },
+      { kind: 'forked', label: '分支继承' },
+    ]
+
+    /** `notifyReasons` 缺省时的默认勾选集合：除 `forked` 外全选（与宿主半一致）。 */
+    const DEFAULT_NOTIFY_REASONS = REASONS.map((row) => row.kind).filter((kind) => kind !== 'forked')
+
     /** 口令凭据的默认引用名；必须与宿主半的 `DEFAULT_PASSWORD_REF` 一致。 */
     const DEFAULT_PASSWORD_REF = 'GOTIFY_PASSWORD'
 
@@ -76,9 +93,14 @@ window.__ModuleLoader__.load({
       titleOtherHint: '未完成/失败时使用；占位符同上。',
       message: '正文模板',
       messageHint: '占位符同标题。表单是单行输入：写 \\n（反斜杠加 n）表示换行。',
-      priority: '优先级',
+      notifyReasons: '触发通知的结束原因',
+      notifyReasonsHint: '勾选哪些轮次结果才推送；一个都不勾等于关闭通知。',
+      priorityCompleted: '成功时的优先级',
+      priorityError: '非成功时的优先级',
       priorityHint: '0–10 的整数，越大越显眼。',
-      notifyOnErrorOnly: '仅在不成功时通知',
+      minTurn: '最低轮次门槛',
+      minTurnHint: '轮次低于该值不推送（0 = 每轮都推）；快速小问答不打扰。',
+      invalidMinTurn: '请填 0 或正整数。',
       includeSubagents: '子 Agent 轮次也通知',
       edit: '编辑',
       overridden: '已覆盖',
@@ -169,6 +191,9 @@ window.__ModuleLoader__.load({
      * @param scope - 该命名空间的配置表单。
      */
     class CardController {
+      /** 原因勾选的写回链：串行化读-改-写，避免连点丢更新。 */
+      #toggleChain = Promise.resolve(false)
+
       constructor(owner, namespace, scope) {
         this.owner = owner
         this.namespace = namespace
@@ -182,7 +207,9 @@ window.__ModuleLoader__.load({
           P.settingsTextField('titleCompleted'),
           P.settingsTextField('titleOther'),
           P.settingsTextField('message'),
-          boundedNumberField('priority', 0, 10),
+          boundedNumberField('priorityCompleted', 0, 10),
+          boundedNumberField('priorityError', 0, 10),
+          boundedNumberField('minTurn', 0, Number.MAX_SAFE_INTEGER),
         ]
         this.form = new P.SettingsFormModel(
           {
@@ -216,8 +243,10 @@ window.__ModuleLoader__.load({
           titleCompleted: this.form.field('titleCompleted'),
           titleOther: this.form.field('titleOther'),
           message: this.form.field('message'),
-          priority: this.form.field('priority'),
-          notifyOnErrorOnly: this.#flag('notifyOnErrorOnly'),
+          priorityCompleted: this.form.field('priorityCompleted'),
+          priorityError: this.form.field('priorityError'),
+          minTurn: this.form.field('minTurn'),
+          notifyReasons: this.#reasons(),
           includeSubagents: this.#flag('includeSubagents'),
           passwordConfigured: this.credential.configured,
           passwordWritable: this.credential.writable,
@@ -297,6 +326,51 @@ window.__ModuleLoader__.load({
         return readValue(this.scope, field) === true
       }
 
+      /** 读 `notifyReasons` 当前集合：非数组（含缺省）回落默认全集，过滤无效项。 */
+      #reasonList() {
+        const raw = readValue(this.scope, 'notifyReasons')
+        if (!Array.isArray(raw)) return DEFAULT_NOTIFY_REASONS.slice()
+        return raw.filter(kind => typeof kind === 'string' && kind !== '')
+      }
+
+      /** 勾选态投影：全集 × 当前集合（未知取值没有复选框，但会保留在配置里）。 */
+      #reasons() {
+        const selected = new Set(this.#reasonList())
+        return REASONS.map(({ kind, label }) => ({ kind, label, checked: selected.has(kind) }))
+      }
+
+      /**
+       * 勾/取消一个触发原因：整组写回 `notifyReasons`。
+       *
+       * 已知项按全集顺序输出；配置里手工写入的**未知取值**（DSH 后端未来新增的
+       * 原因）追加在尾部原样保留 —— 宿主半承诺「勾了就能推」，面板不能替用户
+       * 悄悄删掉它们。写回串行化成一条链，快速连点不会读旧快照互相覆盖；mutate
+       * 带上 revision，与表单保存走同一套乐观并发控制。
+       * @param kind - 原因标识。
+       * @param checked - 是否勾选。
+       */
+      toggleReason(kind, checked) {
+        this.#toggleChain = this.#toggleChain.then(async () => {
+          if (this.scope.getSnapshot()?.writable !== true) return false
+          const raw = this.#reasonList()
+          const known = new Set(REASONS.map(row => row.kind))
+          const current = new Set(raw)
+          if (checked) current.add(kind)
+          else current.delete(kind)
+          const next = [
+            ...REASONS.map(row => row.kind).filter(k => current.has(k)),
+            ...raw.filter(k => !known.has(k) && k !== kind),
+          ]
+          const landed = await this.scope.mutate(
+            [{ op: 'set', path: ['notifyReasons'], value: next }],
+            this.scope.getSnapshot()?.revision,
+          )
+          if (landed) this.publish()
+          return landed
+        })
+        return this.#toggleChain
+      }
+
       /** 立即写入一个布尔开关。 */
       async setFlag(field, value) {
         if (this.scope.getSnapshot()?.writable !== true) return false
@@ -316,6 +390,7 @@ window.__ModuleLoader__.load({
           hooks: { gotifyNotifyCard: this.store },
           ...this.form.actions(),
           setFlag: (field, value) => Promise.resolve(this.setFlag(field, value)),
+          toggleReason: (kind, checked) => Promise.resolve(this.toggleReason(kind, checked)),
         }
       }
 
@@ -453,8 +528,26 @@ window.__ModuleLoader__.load({
         valueField('title-completed', 'titleCompleted', t('titleCompleted'), t('titleCompletedHint')),
         valueField('title-other', 'titleOther', t('titleOther'), t('titleOtherHint')),
         valueField('message', 'message', t('message'), t('messageHint')),
-        valueField('priority', 'priority', t('priority'), t('priorityHint'), { numeric: true }),
-        checkbox('error-only', 'notifyOnErrorOnly', t('notifyOnErrorOnly')),
+        valueField('priority-completed', 'priorityCompleted', t('priorityCompleted'), t('priorityHint'), { numeric: true }),
+        valueField('priority-error', 'priorityError', t('priorityError'), t('priorityHint'), { numeric: true }),
+        valueField('min-turn', 'minTurn', t('minTurn'), t('minTurnHint'), { numeric: true, invalidLabel: t('invalidMinTurn') }),
+        h(
+          'div',
+          { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 } },
+          h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, t('notifyReasons')),
+          h(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: 12 } },
+            state.notifyReasons.map(({ kind, label, checked }) => h(P.Checkbox, {
+              key: kind,
+              checked,
+              disabled,
+              label: `${label}（${kind}）`,
+              onChange: next => void props.toggleReason(kind, next === true),
+            })),
+          ),
+          h('p', { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, t('notifyReasonsHint')),
+        ),
         checkbox('subagents', 'includeSubagents', t('includeSubagents')),
         h(TestNotification, { t, state }),
       )

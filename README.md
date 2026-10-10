@@ -6,8 +6,10 @@ DSH 的 Gotify 通知插件：**每轮会话结束**时向你的 [Gotify](https:
 
 - 监听会话的 `turn/end` 事件，按「成功 / 其它结果」分别使用两套标题模板。
 - 支持占位符：`{id}`（会话短 id）、`{title}`（会话标题，与侧边栏一致）、`{turn}`（轮次）、`{reason}`（结束原因的**中文标签**）、`{reasonRaw}`（结束原因的原始标识）、`{error}`（失败原因，仅在出错时有内容）、`{cwd}`（工作目录名）、`{time}`（本地时间）；未知占位符原样保留。
+- **触发原因多选**（`notifyReasons`）：勾选哪些结束原因才推送 —— 成功、失败、被阻断、已中止、已中断、超出长度上限、分支继承；默认除「分支继承」外全选，一个都不勾等于关闭通知。
+- **分档优先级**：成功（`priorityCompleted`，默认 3）与非成功（`priorityError`，默认 8）各一档，失败比成功更醒目。
+- **最低轮次门槛**（`minTurn`，默认 0）：轮次低于该值不推送，快速小问答不打扰；轮次缺失时不拦截（宁可多推）。
 - 默认跳过子 Agent 会话，可开关。
-- 可只在失败/中断时通知（`notifyOnErrorOnly`）。
 - 推送失败只写日志，绝不影响会话本身。
 - 插件管理页提供「发送测试通知」按钮，配好之后可以先验证再启用。
 - 口令存在 **DSH 凭据库**里（和模型设置页写 API Key 是同一个地方），配置文件里只留一个引用名（`passwordEnv`，默认 `GOTIFY_PASSWORD`），所以 `cordis.patch.yml` 里不含任何机密；用户名不是机密，仍放在设置里。详见下面的「凭据」一节。
@@ -60,8 +62,10 @@ pnpm add file:C:\path\to\dsh-gotify-notify
 | `titleCompleted` | 正常结束时的通知标题模板 | `DSH 任务完成` |
 | `titleOther` | 非正常结束时的标题模板 | `DSH 轮次结束（{reason}）` |
 | `message` | 通知正文模板 | 见下 |
-| `priority` | 优先级，0–10 的整数 | `5` |
-| `notifyOnErrorOnly` | 只在非正常结束时通知 | 关 |
+| `notifyReasons` | 哪些结束原因才推送（多选） | 除 `forked` 外全部 |
+| `priorityCompleted` | 成功时的优先级，0–10 的整数 | `3` |
+| `priorityError` | 非成功时的优先级，0–10 的整数 | `8` |
+| `minTurn` | 最低轮次门槛，低于该值不推送 | `0` |
 | `includeSubagents` | 连子 Agent 的轮次结束也通知 | 关 |
 
 ### 凭据
@@ -111,6 +115,7 @@ pnpm add file:C:\path\to\dsh-gotify-notify
 ## 行为细节
 
 - 只处理 `turn/end`；子 Agent 判定同时看 `header.origin === 'subagent'` 与 `header.parentSession`。
+- 触发判定链：结束原因先查 `notifyReasons` 集合（手写进配置的未收录新取值照样能触发推送；面板只展示已知原因，但勾选写回时会**原样保留**配置里的未知取值，不会悄悄删掉），再过 `minTurn` 轮次门槛（轮次缺失或非整数时放行，宁可多推）；优先级按「成功 / 非成功」分档，未知取值偏异常档。
 - token 只在内存里缓存，进程重启后重新换取；获取失败会清空缓存，下次重试。
 - 推送是 fire-and-forget：失败时只在 DSH 日志里记一条 `推送失败：…`。
 - 「发送测试通知」由宿主侧路由 `/gotify-notify/test` 处理，围栏是「回环 socket + 回环 Host」：DSH 桌面壳转发页面请求时会删掉 `Origin` 与 `Sec-Fetch-Site`，所以不能靠浏览器同源标记判定，只能以回环连接本身为权威边界（带了 `Origin` 时仍要求与 `Host` 同权威，`Sec-Fetch-Site: cross-site` 一律拒绝）。
