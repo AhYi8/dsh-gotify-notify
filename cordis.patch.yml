@@ -1,0 +1,18 @@
+# dsh-gotify-notify 的 bundle patch。
+#
+# DSH 启动时读取本包的 `package.json` → `dsh.bundle.patch`，把下面这条 insert
+# 行插进 Loader 树；行里的 `name` 是包名，loader 在 profile 的 node_modules 里
+# 解析它，并把浏览器半（`exports["./client"]`）挂到这一行上。
+#
+# 这里刻意不写 `config:`：
+#   * 默认值全部来自宿主半 `lib/index.js` 的 `Config` 默认（含默认 url），
+#     没有 profile 覆盖项时它们就是生效值；
+#   * 设置面板保存时，`@deepseek-ai/dsh-config-editor` 会跳过带 `insert` 的行，
+#     在 profile 的 `cordis.patch.yml` 末尾追加一条同 id 的顶层行来承载
+#     `config:`。这与官方插件开关（`writePluginEnabled`）的行为完全一致，
+#     也是 better-sidebar 等已装插件的既有形态；
+#   * 若在这里预置一份 `config:`，保存后就会同时存在「insert 行默认值」与
+#     「顶层行覆盖值」两份配置，徒增困惑。
+- insert:
+    - id: gotify-notify
+      name: dsh-gotify-notify

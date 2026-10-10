@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Gotify notifications",
+    "description": "Push a Gotify notification when a session turn ends. Configurable from the plugin manager page; the password goes into the DSH credential vault, never into the settings file."
+  }
+}
