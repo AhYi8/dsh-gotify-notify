@@ -64,6 +64,14 @@
     "notification"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AhYi8/dsh-gotify-notify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AhYi8/dsh-gotify-notify/issues"
+  },
+  "homepage": "https://github.com/AhYi8/dsh-gotify-notify#readme",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
