@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Gotify notifications",
-    "description": "Push a Gotify notification when a session turn ends. Configure the server, trigger reasons, per-outcome priorities, and a minimum turn threshold from the plugin manager page; the password goes into the DSH credential vault, never into the settings file."
+    "description": "Push a Gotify notification when a session turn ends, and optionally when the model pops a choice or input box awaiting your decision. Configure the server, trigger reasons, per-outcome priorities, and a minimum turn threshold from the plugin manager page; the password goes into the DSH credential vault, never into the settings file."
   }
 }

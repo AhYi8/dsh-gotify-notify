@@ -15,12 +15,14 @@ import {
   DEFAULT_NOTIFY_REASONS,
   DEFAULT_PASSWORD_REF,
   DEFAULT_URL,
+  GotifyClient,
   REASON_KINDS,
   isCredentialRefName,
   latestTitle,
   launchEnvironmentOf,
   missingCredentialMessage,
   priorityFor,
+  QUESTION_TOOLS,
   reasonError,
   reasonLabel,
   render,
@@ -28,22 +30,28 @@ import {
   resolveCredentials,
   sameOriginRequest,
   shouldNotify,
+  shouldNotifyQuestion,
 } from './lib/index.js'
 
-/** 用默认值构造一份「已解析」的配置对象（模拟 cordis 传给 apply 的 config）。 */
+/**
+ * 用默认值构造一份「已解析」的配置对象（模拟 cordis 传给 apply 的 config）。
+ *
+ * 刻意**不**提供五个模板字段：`resolveConfig` 会回落到 schema 里的默认模板，
+ * 于是渲染断言吃到的就是真实默认值。早先在这里抄了一份模板副本，schema 改了
+ * 正文（补「目录/时间」两行）而副本没跟上，断言仍然全绿。
+ */
 function resolved(overrides = {}) {
   const values = {
     url: '',
     token: '',
     user: '',
     passwordEnv: '',
-    titleCompleted: 'DSH 任务完成',
-    titleOther: 'DSH 轮次结束（{reason}）',
-    message: '会话 {title} 第 {turn} 轮已结束\\n结果：{reason}',
     notifyReasons: DEFAULT_NOTIFY_REASONS.slice(),
     priorityCompleted: 3,
     priorityError: 8,
+    priorityQuestion: 8,
     minTurn: 0,
+    notifyQuestion: false,
     includeSubagents: false,
     ...overrides,
   }
@@ -93,10 +101,24 @@ const schemaJson = JSON.stringify([
 assert.ok(schemaJson.includes('volatile'), '序列化结果里应保留 volatile 元信息')
 
 // 2) 全部字段都是 volatile（否则设置界面看不到它们）。
-const fields = ['url', 'token', 'user', 'passwordEnv', 'titleCompleted', 'titleOther', 'message', 'notifyReasons', 'priorityCompleted', 'priorityError', 'minTurn', 'includeSubagents']
+const fields = ['url', 'token', 'user', 'passwordEnv', 'titleCompleted', 'titleOther', 'titleQuestion', 'message', 'questionMessage', 'notifyReasons', 'priorityCompleted', 'priorityError', 'priorityQuestion', 'minTurn', 'notifyQuestion', 'includeSubagents']
+assert.deepEqual(Object.keys(Config.dict).sort(), [...fields].sort(), 'volatile 字段清单必须覆盖 Config 的全部字段（新增字段不能漏）')
 for (const field of fields) {
   assert.ok(Config.dict[field] !== undefined, `Config 缺少字段 ${field}`)
   assert.equal(Config.dict[field].meta.volatile, true, `字段 ${field} 不是 volatile`)
+}
+
+// 2.1) 自检里的默认值副本必须与 schema 默认值逐项一致：两层各改一处也能被抓住。
+for (const field of ['priorityCompleted', 'priorityError', 'priorityQuestion', 'minTurn', 'notifyQuestion', 'includeSubagents', 'notifyReasons']) {
+  assert.deepEqual(resolved()[field].get(), Config.dict[field].meta.default, `自检里的 ${field} 默认值副本与 schema 不一致`)
+}
+// 字符串字段反过来：自检故意给空串（走 resolveConfig 自己的回落与报错路径）。
+for (const field of ['url', 'token', 'user', 'passwordEnv']) {
+  assert.equal(resolved()[field].get(), '', `自检里的 ${field} 应是空串兜底值`)
+}
+// 五个模板字段：自检里**不该**有副本，否则 schema 改了正文也测不出来。
+for (const field of ['titleCompleted', 'titleOther', 'titleQuestion', 'message', 'questionMessage']) {
+  assert.equal(resolved()[field], undefined, `自检不应为 ${field} 抄默认值副本（应让 resolveConfig 回落到 schema 默认值）`)
 }
 
 // 3) url 校验与归一化。
@@ -221,7 +243,8 @@ assert.equal(sameOriginRequest(mockReq({ host: 'evil.example.com:19387' })), fal
 assert.equal(sameOriginRequest(mockReq({ host: '10.0.0.1:19387' })), false, '私网 Host 应拒绝')
 assert.equal(sameOriginRequest(mockReq({ host: '127.0.0.1:notaport' })), false, '非法 Host 应拒绝')
 assert.equal(sameOriginRequest(mockReq({ noHost: true })), false, '缺 Host 应拒绝')
-assert.equal(sameOriginRequest(mockReq({ noHost: true })).valueOf(), false, '同上（防优化掉）')
+// 桩件默认 remoteAddress 是回环地址，所以「缺 Host 应拒绝」只有在 host 键真的缺席时才成立；
+// 这一条防的是桩件将来改坏后上一条「因为错误的原因」通过。
 assert.equal(mockReq({ noHost: true }).headers.host, undefined, 'noHost 桩件确实不带 host 键')
 
 // 8) 会话标题：官方服务 → 事件折叠 → 首条用户消息 → 短 id。
@@ -373,4 +396,107 @@ assert.equal(
   '越界的优先级草稿回落默认档',
 )
 
-console.log('selfcheck 通过：Config 12 个 volatile 字段、url/凭据（凭据服务优先）/模板/会话标题/结束原因中文化/错误详情/测试路由围栏/触发判定真值表均符合预期。')
+// 12) 「等待用户决定」通知：工具集合、独立配置档、轮次门槛、模板渲染。
+assert.deepEqual(
+  [...QUESTION_TOOLS].sort(),
+  ['ask_user_question', 'request_user_input'],
+  '提问工具集应只含选择框与输入框（权限审批走 ctx.approval 缝，明确不覆盖）',
+)
+const qCfg = resolveConfig(resolved({ url: 'https://gotify.21zys.com' }))
+assert.equal(qCfg.notifyQuestion, false, '提问通知默认关闭')
+assert.equal(qCfg.titleQuestion, 'DSH 等待你的决定', '默认提问标题')
+assert.equal(qCfg.priorityQuestion, 8, '提问优先级默认与失败同档（会话停摆等人）')
+assert.equal(
+  resolveConfig(resolved({ url: 'https://gotify.21zys.com', titleQuestion: '  ' })).titleQuestion,
+  'DSH 等待你的决定',
+  '空提问标题回落默认值',
+)
+assert.equal(
+  resolveConfig(resolved({ url: 'https://gotify.21zys.com', priorityQuestion: 99 })).priorityQuestion,
+  8,
+  '越界的提问优先级回落默认档',
+)
+assert.equal(reasonLabel('awaiting-input'), '等待用户输入', '提问通知的 {reason} 中文标签')
+const qTurnCfg = resolveConfig(resolved({ url: 'https://gotify.21zys.com', minTurn: 3 }))
+assert.equal(shouldNotifyQuestion(2, qTurnCfg), false, '低于门槛的提问不推')
+assert.equal(shouldNotifyQuestion(3, qTurnCfg), true, '达到门槛的提问放行')
+assert.equal(shouldNotifyQuestion(undefined, qTurnCfg), true, '轮次缺失的提问放行（与 shouldNotify 同口径）')
+assert.equal(shouldNotifyQuestion('2', qTurnCfg), true, '非数字轮次不拦')
+assert.equal(
+  render(qCfg.questionMessage, { title: '演示会话', turn: 2, reason: reasonLabel('awaiting-input'), cwd: 'desktop', time: '2026/1/1 00:00:00' }),
+  '会话 演示会话 在等你做决定（第 2 轮）\n目录：desktop\n时间：2026/1/1 00:00:00',
+  '默认提问正文应渲染出标题/轮次/目录/时间与换行',
+)
+
+// 13) Gotify 客户端：token 缓存随服务器地址失效、401 清缓存重取、请求带超时信号。
+//     全部走桩 fetch，不发真实网络请求。
+const realFetch = globalThis.fetch
+const calls = []
+/** 一台假服务器：`/application` 返回固定 token，`/message` 按脚本回答。 */
+function stubServer({ token = 'tok-1', messageStatus = [200] } = {}) {
+  return async (url, init = {}) => {
+    const href = String(url)
+    calls.push({ href, init })
+    if (href.endsWith('/application')) {
+      return { ok: true, status: 200, json: async () => [{ name: 'DSH', token }] }
+    }
+    const status = messageStatus.length > 1 ? messageStatus.shift() : messageStatus[0]
+    return { ok: status >= 200 && status < 300, status, json: async () => ({}) }
+  }
+}
+const credentials = { user: 'admin', password: 'p@ss' }
+const pushPayload = { title: 't', message: 'm', priority: 1 }
+try {
+  // 13a) 同一服务器：token 只取一次，后续推送复用缓存。
+  calls.length = 0
+  const client = new GotifyClient(undefined)
+  globalThis.fetch = stubServer({ token: 'tok-a' })
+  const cfgA = resolveConfig(resolved({ url: 'https://a.example' }))
+  assert.equal((await client.push(cfgA, credentials, pushPayload)).status, 200, '首次推送应成功')
+  assert.equal(calls.filter((c) => c.href.endsWith('/application')).length, 1, '首次推送应取一次 token')
+  await client.push(cfgA, credentials, pushPayload)
+  assert.equal(calls.filter((c) => c.href.endsWith('/application')).length, 1, '同一 url 再推不应重取 token')
+  assert.equal(calls.length, 3, '两次推送共 1 次取 token + 2 次发消息')
+  assert.ok(calls.every((c) => c.init.signal instanceof AbortSignal), '每次请求都应带超时信号')
+
+  // 13b) 换服务器：旧 token 必须作废，重新 /application（否则会一直 401）。
+  globalThis.fetch = stubServer({ token: 'tok-b' })
+  const cfgB = resolveConfig(resolved({ url: 'https://b.example' }))
+  calls.length = 0
+  await client.push(cfgB, credentials, pushPayload)
+  assert.equal(calls.filter((c) => c.href.endsWith('/application')).length, 1, '换 url 后应重新取 token')
+  assert.ok(calls.some((c) => c.href.includes('token=tok-b')), '应使用新服务器的 token 推送')
+
+  // 13c) 401：清缓存重取一次再试（token 被吊销的场景）。
+  calls.length = 0
+  globalThis.fetch = stubServer({ token: 'tok-c', messageStatus: [401, 200] })
+  const cfgC = resolveConfig(resolved({ url: 'https://c.example' }))
+  assert.equal((await client.push(cfgC, credentials, pushPayload)).status, 200, '401 后重取 token 应成功')
+  assert.equal(calls.filter((c) => c.href.endsWith('/application')).length, 2, '401 应触发一次重取')
+  assert.equal(calls.filter((c) => c.href.includes('/message')).length, 2, '401 后应重试一次推送')
+
+  // 13d) 直接配置 token 时无法重取，401 原样报错。
+  calls.length = 0
+  globalThis.fetch = stubServer({ messageStatus: [401] })
+  const cfgToken = resolveConfig(resolved({ url: 'https://d.example', token: 'fixed' }))
+  await assert.rejects(() => client.push(cfgToken, credentials, pushPayload), /HTTP 401/, '自带 token 的 401 应直接报错')
+  assert.equal(calls.length, 1, '自带 token 时不应触发重取')
+
+  // 13e) 失败日志带上底层 errno，且不泄露凭据。
+  const logs = []
+  const logged = new GotifyClient({ error: (line) => logs.push(line) })
+  const networkError = new TypeError('fetch failed')
+  networkError.cause = { code: 'ECONNREFUSED' }
+  logged.report(networkError)
+  assert.equal(logs.length, 1, 'report 应写一行日志')
+  assert.ok(logs[0].includes('fetch failed') && logs[0].includes('ECONNREFUSED'), '日志应带错误码便于诊断')
+  assert.ok(!logs[0].includes('p@ss'), '日志不得泄露口令')
+} finally {
+  globalThis.fetch = realFetch
+}
+
+// 14) 回环 Host 的尾点写法（FQDN 形式）应被当作 localhost，而不是被 403 误伤。
+assert.equal(sameOriginRequest(mockReq({ host: 'localhost.:19387' })), true, '带尾点的 localhost 也应是回环权威')
+assert.equal(sameOriginRequest(mockReq({ host: 'evil.example.com.:19387' })), false, '带尾点的外部域名仍应拒绝')
+
+console.log('selfcheck 通过：Config 16 个 volatile 字段、url/凭据（凭据服务优先）/模板/会话标题/结束原因中文化/错误详情/测试路由围栏/触发判定真值表/提问通知档/Gotify 客户端缓存与重取均符合预期。')

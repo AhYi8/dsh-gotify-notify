@@ -7,7 +7,8 @@
  *   3. `dsh.client` 声明的平台与 `exports["./client"]` 一致
  *      （对应 `dsh-client-modules` 的 `clientExportOf` 要求）；
  *   4. `dsh.bundle.patch` 指向的 YAML 能被读成 UTF-8 文本且含 insert 行；
- *   5. `icon` 是包内相对路径、扩展名合法、体积不超过 256 KiB。
+ *   5. `icon` 是包内相对路径、扩展名合法、体积不超过 256 KiB；
+ *   6. 版本号与 `engines` 声明形态合法。
  *
  * 用法：node selfcheck-manifest.mjs
  */
@@ -31,7 +32,15 @@ assert.ok(manifest.main !== undefined, 'main 必填')
 assert.equal(manifest.exports['./client'], './client/client.js')
 assert.equal(manifest.exports['.'], './lib/index.js')
 for (const [, target] of Object.entries(manifest.exports)) {
-  if (target.includes('*')) continue
+  if (target.includes('*')) {
+    // 通配导出不能一律跳过：本包只用 locale 这一处，一旦换成别的通配形态，
+    // 这里必须同步补展开逻辑，否则「指向不存在的文件」就漏检了。
+    assert.equal(target, './locale/*.json', `出现了未处理通配导出：${target}`)
+    for (const language of ['en', 'zh']) {
+      assert.ok(existsSync(join(root, 'locale', `${language}.json`)), `通配导出应能命中 locale/${language}.json`)
+    }
+    continue
+  }
   assert.ok(existsSync(resolve(root, target)), `exports 目标不存在：${target}`)
 }
 for (const entry of manifest.files) {
@@ -42,11 +51,24 @@ for (const entry of manifest.files) {
 assert.equal(manifest.dsh.manifestVersion, 1)
 assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
 assert.equal(manifest.dsh.client.platform, 'web')
-assert.ok(Array.isArray(manifest.dsh.client.inject) && manifest.dsh.client.inject.length > 0, 'client.inject 不能为空')
+// 精确比对而非只看前缀：多列一个没被 require 的客户端包（或少列一个）都应有意识，
+// 清单里声明的每个注入包也必须在 peerDependencies 里交代版本。
+assert.deepEqual(
+  manifest.dsh.client.inject,
+  ['@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-settings'],
+  'client.inject 列表与预期不一致',
+)
 for (const dependency of manifest.dsh.client.inject) {
   assert.match(dependency, /^@deepseek-ai\/dsh-client-/, `client.inject 只应列客户端包：${dependency}`)
+  assert.equal(typeof manifest.peerDependencies?.[dependency], 'string', `client.inject 的 ${dependency} 应在 peerDependencies 里声明`)
 }
 assert.ok(existsSync(resolve(root, manifest.dsh.bundle.patch)), 'bundle.patch 指向的文件不存在')
+
+// 3.1) 版本号与 engines 形态（装不上或声明写坏时给出可读的失败信息）。
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/, 'version 应是 x.y.z 形态')
+assert.equal(typeof manifest.engines?.node, 'string', 'engines.node 必填')
+assert.equal(typeof manifest.dsh.engines?.dsh, 'string', 'dsh.engines.dsh 必填（DSH 用它判断兼容范围）')
+assert.match(manifest.dsh.engines.dsh, /^(>=|\^|~)/, 'dsh.engines.dsh 应是 semver 范围')
 
 // 4) bundle patch 是最简 insert 行。
 const patchText = readFileSync(resolve(root, manifest.dsh.bundle.patch), 'utf8')
@@ -77,4 +99,4 @@ for (const language of ['en', 'zh']) {
   assert.equal(typeof parsed.meta?.description, 'string', `locale/${language}.json 缺少 meta.description`)
 }
 
-console.log('selfcheck-manifest 通过：清单字段、exports/files 指向、bundle patch 形态与 icon/locale 均合法。')
+console.log('selfcheck-manifest 通过：清单字段、exports/files（含通配导出）、版本与 engines、bundle patch 形态与 icon/locale 均合法。')

@@ -26,34 +26,46 @@ window.__ModuleLoader__.load({
     /** 本页字典命名空间。 */
     const NS = 'settings.gotifyNotify'
 
-    /** 缺失字段文案。 */
-    const MISSING = '（未配置）'
-
     /** 本包名：既是 Loader 模块 id，也是 `plugins.row.config` 键的前半段。 */
     const PKG = 'dsh-gotify-notify'
 
-    /** 该行配置表单最可能被登记的命名空间，按可能性排序。 */
+    /** 该行配置表单最可能被登记的命名空间，按可能性排序。
+     *
+     * 不采用官方的 `whileServed()`：它面向「替他人拥有的命名空间注册表单」，而本卡注册
+     * 的就是自己的命名空间，`configForms.describe` 探测加 `get()` 自愈已经够用；引入它
+     * 只会多一层无法用非交互手段验证的注册语义。
+     */
     const CANDIDATE_NAMESPACES = ['gotify-notify', 'dsh-gotify-notify']
 
     /** 宿主半注册的测试通知路由。 */
     const TEST_ROUTE = '/gotify-notify/test'
 
     /**
-     * 触发原因全集与标签，必须与宿主半的 `REASON_KINDS` / `REASON_LABELS` 一致。
-     * 顺序即面板上的展示顺序。
+     * 测试通知的兜底超时。宿主路由内部最多串 3 次 Gotify 请求（各自 10 秒超时），
+     * 所以 60 秒足以覆盖最坏情况；它的作用只是避免桌面壳不回包时，按钮永久停在
+     * 「发送中…」。
      */
-    const REASONS = [
-      { kind: 'completed', label: '成功' },
-      { kind: 'error', label: '失败' },
-      { kind: 'blocked', label: '被阻断' },
-      { kind: 'aborted', label: '已中止' },
-      { kind: 'interrupted', label: '已中断' },
-      { kind: 'max-tokens', label: '超出长度上限' },
-      { kind: 'forked', label: '分支继承' },
-    ]
+    const TEST_NOTIFY_TIMEOUT_MS = 60_000
+
+    /**
+     * 触发原因全集，必须与宿主半的 `REASON_KINDS` 一致，顺序即面板上的展示顺序。
+     * 标签不进常量表：它随界面语言变化，由字典按 `reasonKey()` 提供（中文标签与
+     * 宿主半的 `REASON_LABELS` 一致）。
+     */
+    const REASONS = ['completed', 'error', 'blocked', 'aborted', 'interrupted', 'max-tokens', 'forked']
 
     /** `notifyReasons` 缺省时的默认勾选集合：除 `forked` 外全选（与宿主半一致）。 */
-    const DEFAULT_NOTIFY_REASONS = REASONS.map((row) => row.kind).filter((kind) => kind !== 'forked')
+    const DEFAULT_NOTIFY_REASONS = REASONS.filter((kind) => kind !== 'forked')
+
+    /**
+     * 原因标识对应的字典键：`completed` → `reasonCompleted`，`max-tokens` → `reasonMaxTokens`。
+     * 后端将来新增的原因没有字典条目时，`t()` 会原样显示键名，不会编造标签。
+     * @param kind - 原因标识。
+     * @returns 字典键。
+     */
+    function reasonKey(kind) {
+      return `reason${kind.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('')}`
+    }
 
     /** 口令凭据的默认引用名；必须与宿主半的 `DEFAULT_PASSWORD_REF` 一致。 */
     const DEFAULT_PASSWORD_REF = 'GOTIFY_PASSWORD'
@@ -74,6 +86,9 @@ window.__ModuleLoader__.load({
     }
 
     const zh = {
+      // 官方四张卡片字典都定义 `title`，官方外壳经注册项的 `label: () => t('title')` 读它；
+      // 本卡只注册 `plugins.row.config`（行页标题来自包元信息 locale/*.json），当前没有读取点，
+      // 但它是官方约定键，保留以免将来补 `plugins.item` 注册时界面直接画出键名。
       title: 'Gotify 通知',
       description: 'DSH 会话轮次结束时，向 Gotify 服务器推送一条通知。',
       url: 'Gotify 服务器地址',
@@ -91,6 +106,13 @@ window.__ModuleLoader__.load({
       titleCompletedHint: '占位符：{reason}（中文，如「成功」）、{reasonRaw}（原始标识，如 completed）、{error}（失败原因，仅出错时有内容）、{title}、{turn}、{id}、{cwd}、{time}。',
       titleOther: '其他结果的标题',
       titleOtherHint: '未完成/失败时使用；占位符同上。',
+      notifyQuestion: '需要用户决定时也通知',
+      notifyQuestionHint: '模型弹出选择框/输入框等你做决定时也推送（独立于轮次结束通知，默认关）。',
+      titleQuestion: '等待决定时的标题',
+      titleQuestionHint: '弹出选择框/输入框时使用；占位符同上，{reason} 渲染为「等待用户输入」。',
+      questionMessage: '等待决定时的正文',
+      questionMessageHint: '占位符同标题。表单是单行输入：写 \\n（反斜杠加 n）表示换行。',
+      priorityQuestion: '等待决定时的优先级',
       message: '正文模板',
       messageHint: '占位符同标题。表单是单行输入：写 \\n（反斜杠加 n）表示换行。',
       notifyReasons: '触发通知的结束原因',
@@ -102,7 +124,6 @@ window.__ModuleLoader__.load({
       minTurnHint: '轮次低于该值不推送（0 = 每轮都推）；快速小问答不打扰。',
       invalidMinTurn: '请填 0 或正整数。',
       includeSubagents: '子 Agent 轮次也通知',
-      edit: '编辑',
       overridden: '已覆盖',
       reset: '恢复默认',
       invalidNumber: '请填 0–10 的整数。',
@@ -111,12 +132,86 @@ window.__ModuleLoader__.load({
       save: '保存',
       saving: '保存中…',
       saveFailed: '本部署没有接受这些值，已保留供你修改。',
-      saveNow: '有未保存的修改，点此保存。',
       test: '发送测试通知',
       testing: '发送中…',
       testOk: '已发送测试通知。',
       testFailed: '测试失败：',
       testNoUrl: '请先填写 Gotify 服务器地址。',
+      testUnsaved: '请先保存修改：测试通知用的是已保存的配置。',
+      testTimeout: '等待服务器响应超时，请检查 Gotify 服务器是否可达。',
+      reasonCompleted: '成功',
+      reasonError: '失败',
+      reasonBlocked: '被阻断',
+      reasonAborted: '已中止',
+      reasonInterrupted: '已中断',
+      reasonMaxTokens: '超出长度上限',
+      reasonForked: '分支继承',
+    }
+
+    /**
+     * 英文界面用的同名词典。
+     *
+     * 必须与 `zh` 键集完全一致 —— 本插件在英文界面上没有其它回落来源：
+     * `locale.register` 只登记本命名空间，缺键时 `t()` 会把键名原样画到界面上。
+     */
+    const en = {
+      title: 'Gotify notifications',
+      description: 'Pushes a notification to your Gotify server when a DSH session turn ends.',
+      url: 'Gotify server URL',
+      urlHint: 'For example https://gotify.example.com; a trailing slash is ignored.',
+      user: 'User name',
+      userHint: 'Leave empty to read the GOTIFY_USER environment variable at startup.',
+      password: 'Password',
+      passwordHint: 'Stored in the DSH credential store, never in the config file; not echoed back, and an empty value keeps the current one.',
+      passwordSet: 'Configured in the credential store',
+      passwordUnset: 'Not configured in the credential store',
+      passwordUnwritable: 'This reference comes from the startup environment and cannot be overwritten.',
+      passwordEnv: 'Credential reference for the password',
+      passwordEnvHint: 'Name of the password in the credential store (also the environment variable name); defaults to GOTIFY_PASSWORD.',
+      titleCompleted: 'Title on success',
+      titleCompletedHint: 'Placeholders: {reason} (localized label), {reasonRaw} (raw id such as completed), {error} (failure reason, only when there is one), {title}, {turn}, {id}, {cwd}, {time}.',
+      titleOther: 'Title on other outcomes',
+      titleOtherHint: 'Used when the turn did not complete successfully; same placeholders as above.',
+      notifyQuestion: 'Notify when the model needs your decision',
+      notifyQuestionHint: 'Also push when the model opens a choice or input box and waits for you (independent of turn-end notifications; off by default).',
+      titleQuestion: 'Title when waiting for your decision',
+      titleQuestionHint: 'Used for the choice or input box; same placeholders, with {reason} rendered as the waiting-for-input label.',
+      questionMessage: 'Body when waiting for your decision',
+      questionMessageHint: 'Same placeholders as the title. The input is a single line: write \\n (backslash + n) for a newline.',
+      priorityQuestion: 'Priority when waiting for your decision',
+      message: 'Body template',
+      messageHint: 'Same placeholders as the title. The input is a single line: write \\n (backslash + n) for a newline.',
+      notifyReasons: 'Turn outcomes that trigger a notification',
+      notifyReasonsHint: 'Only the checked outcomes are pushed; checking none turns notifications off.',
+      priorityCompleted: 'Priority on success',
+      priorityError: 'Priority on other outcomes',
+      priorityHint: 'An integer from 0 to 10; higher is more prominent.',
+      minTurn: 'Minimum turn',
+      minTurnHint: 'Turns below this value are not pushed (0 = every turn); keeps quick questions quiet.',
+      invalidMinTurn: 'Enter 0 or a positive integer.',
+      includeSubagents: 'Notify for subagent turns too',
+      overridden: 'Overridden',
+      reset: 'Reset',
+      invalidNumber: 'Enter an integer from 0 to 10.',
+      unavailable: 'This plugin is not loaded right now, so it cannot be configured.',
+      readOnly: 'Settings are read-only in this deployment.',
+      save: 'Save',
+      saving: 'Saving…',
+      saveFailed: 'This deployment did not accept these values; they are kept for you to fix.',
+      test: 'Send a test notification',
+      testing: 'Sending…',
+      testOk: 'Test notification sent.',
+      testFailed: 'Test failed: ',
+      testNoUrl: 'Fill in the Gotify server URL first.',
+      testUnsaved: 'Save your changes first: the test uses the saved configuration.',
+      testTimeout: 'Timed out waiting for the server. Check that the Gotify server is reachable.',
+      reasonCompleted: 'Success',
+      reasonError: 'Failed',
+      reasonBlocked: 'Blocked',
+      reasonAborted: 'Aborted',
+      reasonInterrupted: 'Interrupted',
+      reasonMaxTokens: 'Over token limit',
+      reasonForked: 'Forked',
     }
 
     /**
@@ -160,7 +255,7 @@ window.__ModuleLoader__.load({
      * 但不同 DSH 版本推导出的条目 id 可能不同，因此按候选顺序探测：
      * 先看 describe 镜像里出现了谁，再退回到「能取到表单」的第一个候选。
      * @param ctx - 浏览器插件上下文。
-     * @returns 命名空间与它的表单。
+     * @returns 命名空间与它的表单；一个候选都取不到表单时 `scope` 为 undefined。
      */
     function resolveNamespace(ctx) {
       let served = []
@@ -181,7 +276,13 @@ window.__ModuleLoader__.load({
           // 该候选没有被宿主服务，试下一个。
         }
       }
-      return { id: CANDIDATE_NAMESPACES[0], scope: ctx.configForms.get(CANDIDATE_NAMESPACES[0]) }
+      // 兜底探测同样要容错：`get` 抛错时若让它冒出去，插槽回调会整体中断，
+      // 用户看到的是「卡片凭空消失」。交给调用方按下线处理。
+      try {
+        return { id: CANDIDATE_NAMESPACES[0], scope: ctx.configForms.get(CANDIDATE_NAMESPACES[0]) }
+      } catch {
+        return { id: CANDIDATE_NAMESPACES[0], scope: undefined }
+      }
     }
 
     /**
@@ -207,8 +308,11 @@ window.__ModuleLoader__.load({
           P.settingsTextField('titleCompleted'),
           P.settingsTextField('titleOther'),
           P.settingsTextField('message'),
+          P.settingsTextField('titleQuestion'),
+          P.settingsTextField('questionMessage'),
           boundedNumberField('priorityCompleted', 0, 10),
           boundedNumberField('priorityError', 0, 10),
+          boundedNumberField('priorityQuestion', 0, 10),
           boundedNumberField('minTurn', 0, Number.MAX_SAFE_INTEGER),
         ]
         this.form = new P.SettingsFormModel(
@@ -242,15 +346,22 @@ window.__ModuleLoader__.load({
           password: this.form.field('password'),
           titleCompleted: this.form.field('titleCompleted'),
           titleOther: this.form.field('titleOther'),
+          titleQuestion: this.form.field('titleQuestion'),
           message: this.form.field('message'),
+          questionMessage: this.form.field('questionMessage'),
           priorityCompleted: this.form.field('priorityCompleted'),
           priorityError: this.form.field('priorityError'),
+          priorityQuestion: this.form.field('priorityQuestion'),
           minTurn: this.form.field('minTurn'),
           notifyReasons: this.#reasons(),
+          notifyQuestion: this.#flag('notifyQuestion'),
           includeSubagents: this.#flag('includeSubagents'),
           passwordConfigured: this.credential.configured,
           passwordWritable: this.credential.writable,
           passwordRef: this.credential.ref,
+          // 「发送测试通知」打到的是**已保存**的配置（宿主路由读配置读值），
+          // 所以按钮要拿保存值判断前置条件，不能拿草稿判断。
+          urlSaved: typeof readValue(this.scope, 'url') === 'string' ? readValue(this.scope, 'url') : '',
         }
       }
 
@@ -264,7 +375,10 @@ window.__ModuleLoader__.load({
        * @returns 宿主是否确认该引用已配置。
        */
       async #writeSecret(text) {
-        const ref = this.credential.ref
+        // 现读引用名，不信缓存的投影：同一次保存里 `passwordEnv` 可能刚被改过
+        // （官方 `SettingsFormModel.save()` 先写配置操作、再跑 secret 的 run），
+        // 口令必须落到改完之后的名字下。
+        const ref = this.#refFromScope()
         const value = String(text).trim()
         if (value === '' || !isRefName(ref)) return false
         try {
@@ -336,7 +450,7 @@ window.__ModuleLoader__.load({
       /** 勾选态投影：全集 × 当前集合（未知取值没有复选框，但会保留在配置里）。 */
       #reasons() {
         const selected = new Set(this.#reasonList())
-        return REASONS.map(({ kind, label }) => ({ kind, label, checked: selected.has(kind) }))
+        return REASONS.map(kind => ({ kind, checked: selected.has(kind) }))
       }
 
       /**
@@ -344,39 +458,54 @@ window.__ModuleLoader__.load({
        *
        * 已知项按全集顺序输出；配置里手工写入的**未知取值**（DSH 后端未来新增的
        * 原因）追加在尾部原样保留 —— 宿主半承诺「勾了就能推」，面板不能替用户
-       * 悄悄删掉它们。写回串行化成一条链，快速连点不会读旧快照互相覆盖；mutate
-       * 带上 revision，与表单保存走同一套乐观并发控制。
+       * 悄悄删掉它们。写回串行化成一条链，快速连点不会读旧快照互相覆盖。
        * @param kind - 原因标识。
        * @param checked - 是否勾选。
        */
       toggleReason(kind, checked) {
-        this.#toggleChain = this.#toggleChain.then(async () => {
-          if (this.scope.getSnapshot()?.writable !== true) return false
-          const raw = this.#reasonList()
-          const known = new Set(REASONS.map(row => row.kind))
-          const current = new Set(raw)
-          if (checked) current.add(kind)
-          else current.delete(kind)
-          const next = [
-            ...REASONS.map(row => row.kind).filter(k => current.has(k)),
-            ...raw.filter(k => !known.has(k) && k !== kind),
-          ]
-          const landed = await this.scope.mutate(
-            [{ op: 'set', path: ['notifyReasons'], value: next }],
-            this.scope.getSnapshot()?.revision,
-          )
-          if (landed) this.publish()
-          return landed
-        })
+        // 链一旦变成 rejected，之后每次 `.then()` 都会直接跳过回调，勾选功能会
+        // 永久失效；`#write` 自己吞掉写入异常，这里再兜一层，保证链始终可续。
+        this.#toggleChain = this.#toggleChain
+          .then(async () => {
+            const raw = this.#reasonList()
+            const known = new Set(REASONS)
+            const current = new Set(raw)
+            if (checked) current.add(kind)
+            else current.delete(kind)
+            const next = [
+              ...REASONS.filter(item => current.has(item)),
+              ...raw.filter(item => !known.has(item) && item !== kind),
+            ]
+            return await this.#write([{ op: 'set', path: ['notifyReasons'], value: next }])
+          })
+          .catch(() => false)
         return this.#toggleChain
+      }
+
+      /**
+       * 立即写入一组配置操作（开关与原因勾选共用）。
+       *
+       * 写前现读 revision，与表单保存走同一套乐观并发控制；被拒绝或抛错都只
+       * 返回 false —— 立即写入没有失败回调，异常冒到槽位里只会变成一条未处理
+       * 拒绝，界面反而看不出发生过什么。
+       * @param ops - 配置操作列表。
+       * @returns 宿主是否接受了这次写入。
+       */
+      async #write(ops) {
+        if (this.scope.getSnapshot()?.writable !== true) return false
+        let landed = false
+        try {
+          landed = await this.scope.mutate(ops, this.scope.getSnapshot()?.revision)
+        } catch {
+          return false
+        }
+        if (landed) this.publish()
+        return landed
       }
 
       /** 立即写入一个布尔开关。 */
       async setFlag(field, value) {
-        if (this.scope.getSnapshot()?.writable !== true) return false
-        const landed = await this.scope.mutate([{ op: 'set', path: [field], value }])
-        if (landed) this.publish()
-        return landed
+        return await this.#write([{ op: 'set', path: [field], value }])
       }
 
       /** 重画（开关或密码状态变化后调用）。 */
@@ -403,15 +532,21 @@ window.__ModuleLoader__.load({
 
     /**
      * 「发送测试通知」按钮：调用宿主注册的同源路由。
-     * @param props - 卡片注入面（用 `state.url.text` 判断 url 是否已配置）。
+     * @param props - 卡片注入面（用 `state.dirty` 与已经保存的 url 判断前置条件）。
      */
     function TestNotification(props) {
       const { t, state } = props
       const [local, setLocal] = React.useState({ phase: 'idle', detail: '' })
 
       const run = async () => {
-        if (String(state.url.text).trim() === '') {
-          setLocal({ phase: 'failed', detail: t('testNoUrl') })
+        // 前置条件不满足时用 blocked：这类提示是「先做别的事」，不该套上
+        // 「测试失败：」前缀。
+        if (state.dirty === true) {
+          setLocal({ phase: 'blocked', detail: t('testUnsaved') })
+          return
+        }
+        if (String(state.urlSaved).trim() === '') {
+          setLocal({ phase: 'blocked', detail: t('testNoUrl') })
           return
         }
         setLocal({ phase: 'running', detail: '' })
@@ -419,6 +554,7 @@ window.__ModuleLoader__.load({
           const response = await fetch(TEST_ROUTE, {
             method: 'POST',
             headers: { accept: 'application/json' },
+            signal: AbortSignal.timeout(TEST_NOTIFY_TIMEOUT_MS),
           })
           const body = await response.json().catch(() => undefined)
           if (body?.ok === true) {
@@ -427,6 +563,13 @@ window.__ModuleLoader__.load({
           }
           setLocal({ phase: 'failed', detail: String(body?.error ?? `HTTP ${response.status}`) })
         } catch (error) {
+          // 超时中止（AbortSignal.timeout 以 TimeoutError 结束）时给出可读提示，
+          // 而不是把 DOMException 的英文原文丢给用户。不写 `instanceof Error`：
+          // 浏览器的 DOMException 并不继承 Error。
+          if (error?.name === 'TimeoutError') {
+            setLocal({ phase: 'failed', detail: t('testTimeout') })
+            return
+          }
           setLocal({ phase: 'failed', detail: error instanceof Error ? error.message : String(error) })
         }
       }
@@ -528,8 +671,11 @@ window.__ModuleLoader__.load({
         valueField('title-completed', 'titleCompleted', t('titleCompleted'), t('titleCompletedHint')),
         valueField('title-other', 'titleOther', t('titleOther'), t('titleOtherHint')),
         valueField('message', 'message', t('message'), t('messageHint')),
+        valueField('title-question', 'titleQuestion', t('titleQuestion'), t('titleQuestionHint')),
+        valueField('question-message', 'questionMessage', t('questionMessage'), t('questionMessageHint')),
         valueField('priority-completed', 'priorityCompleted', t('priorityCompleted'), t('priorityHint'), { numeric: true }),
         valueField('priority-error', 'priorityError', t('priorityError'), t('priorityHint'), { numeric: true }),
+        valueField('priority-question', 'priorityQuestion', t('priorityQuestion'), t('priorityHint'), { numeric: true }),
         valueField('min-turn', 'minTurn', t('minTurn'), t('minTurnHint'), { numeric: true, invalidLabel: t('invalidMinTurn') }),
         h(
           'div',
@@ -538,16 +684,18 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: { display: 'flex', flexWrap: 'wrap', gap: 12 } },
-            state.notifyReasons.map(({ kind, label, checked }) => h(P.Checkbox, {
+            state.notifyReasons.map(({ kind, checked }) => h(P.Checkbox, {
               key: kind,
               checked,
               disabled,
-              label: `${label}（${kind}）`,
+              label: `${t(reasonKey(kind))}（${kind}）`,
               onChange: next => void props.toggleReason(kind, next === true),
             })),
           ),
           h('p', { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, t('notifyReasonsHint')),
         ),
+        checkbox('notify-question', 'notifyQuestion', t('notifyQuestion')),
+        h('p', { style: { margin: '-6px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, t('notifyQuestionHint')),
         checkbox('subagents', 'includeSubagents', t('includeSubagents')),
         h(TestNotification, { t, state }),
       )
@@ -564,9 +712,13 @@ window.__ModuleLoader__.load({
        */
       apply(ctx) {
         const t = ctx.locale.bind(NS)
-        ctx.effect(() => ctx.locale.register(NS, { zh }), 'dsh-gotify-notify: 字典')
+        // 中英两套字典都必须登记：本命名空间没有其它回落来源，缺一套时该语言的
+        // 界面会把字典键名原样显示出来（英文界面即属此列）。
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-gotify-notify: 字典')
 
         const { id, scope } = resolveNamespace(ctx)
+        // 一个候选都取不到表单：不注册卡片，避免构造出永远不可用的空壳控制器。
+        if (scope === undefined) return
         const controller = new CardController(ctx, id, scope)
         ctx.effect(() => () => controller.dispose(), 'dsh-gotify-notify: 表单订阅')
         ctx.effect(

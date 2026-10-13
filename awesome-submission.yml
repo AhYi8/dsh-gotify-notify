@@ -1,0 +1,15 @@
+# awesome-dsh-plugin 收录提交文件（复制到该仓库即可，本文件不随 npm 发布）
+# 提交方式：向 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin 提 PR，
+# 新增一个文件 data/plugins/AhYi8__dsh-gotify-notify.yml，内容如下面 YAML 所示。
+# 注意：
+#  1. 仓库须创建满 1 天，CI 才放行（今天刚建，明天再提）；
+#  2. 先在 GitHub 仓库页给仓库加上 topic: dsh-plugin（收录要求）；
+#  3. README 由脚本生成，不要手工编辑，只提交这一个文件；
+#  4. npm 映射自动采集（package.json 的 repository 已指回本仓库），无需手写 npm: 字段。
+---
+url: https://github.com/AhYi8/dsh-gotify-notify
+name: AhYi8/dsh-gotify-notify
+category: notify
+description:
+  en: Push a Gotify notification when each conversation turn ends, with configurable templates, priority and per-cause titles.
+  zh: 每轮会话结束时向 Gotify 服务器推送通知，支持模板、优先级与按结束原因区分标题。
